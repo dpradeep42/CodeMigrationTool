@@ -1,0 +1,13 @@
+version: '3.8'
+
+services:
+  # Build the sandbox image for development
+  sandbox-dotnet:
+    build:
+      context: .
+      dockerfile: src/CodeMigrationTool.Sandbox/Docker/Dockerfile.dotnet
+    image: codemigrationtool-sandbox-dotnet:latest
+    # This service is only for building the image.
+    # Actual sandbox containers are created dynamically by SandboxManager.
+    profiles:
+      - build

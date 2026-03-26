@@ -1,0 +1,13 @@
+{
+  "mcpServers": {
+    "code-migration-tool": {
+      "command": "dotnet",
+      "args": [
+        "run",
+        "--project",
+        "/path/to/CodeMigrationTool/src/CodeMigrationTool.Server"
+      ],
+      "env": {}
+    }
+  }
+}
