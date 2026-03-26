@@ -81,4 +81,61 @@ public class ExecutionTracerTests
 
         Assert.Empty(stack);
     }
+
+    [Fact]
+    public void InspectObject_StaticProperty_ReturnsValue()
+    {
+        var tracer = new ExecutionTracer(_serializer);
+        _ = typeof(CalculatorService);
+        CalculatorService.ResetState();
+
+        // CallCount is a static property accessor for s_callCount
+        var state = tracer.InspectObject("SampleWcfService.CalculatorService.CallCount", 3);
+
+        Assert.Contains("Int32", state.TypeName);
+        Assert.Equal("0", state.ValueJson);
+    }
+
+    [Fact]
+    public void InspectObject_InvalidExpression_ReturnsError()
+    {
+        var tracer = new ExecutionTracer(_serializer);
+
+        var state = tracer.InspectObject("NoSuch.Type.Field", 3);
+
+        Assert.Equal("Error", state.TypeName);
+        Assert.Contains("Failed to inspect", state.ValueJson);
+    }
+
+    [Fact]
+    public async Task ExecuteAndTrace_VoidMethod_Succeeds()
+    {
+        var tracer = new ExecutionTracer(_serializer);
+        _ = typeof(CalculatorService);
+
+        var result = await tracer.ExecuteAndTraceAsync(
+            "SampleWcfService.CalculatorService.ResetState",
+            "",
+            captureTrace: true);
+
+        Assert.True(result.Success);
+        // Void methods return null for ReturnValueJson
+        Assert.Null(result.ReturnValueJson);
+    }
+
+    [Fact]
+    public async Task ExecuteAndTrace_MethodWithException_CapturesExceptionInfo()
+    {
+        var tracer = new ExecutionTracer(_serializer);
+
+        // Calling a method that doesn't exist triggers an exception
+        var result = await tracer.ExecuteAndTraceAsync(
+            "SampleWcfService.CalculatorService.NonExistentMethod",
+            "[]",
+            captureTrace: true);
+
+        Assert.False(result.Success);
+        Assert.NotNull(result.ExceptionInfo);
+        Assert.NotEmpty(result.ExceptionInfo);
+    }
 }
