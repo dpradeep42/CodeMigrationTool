@@ -75,8 +75,8 @@ public class HarmonyPatcher
         s_activeTracer?.OnMethodEntry(__originalMethod, __args);
     }
 
-    private static void PostfixHook(MethodBase __originalMethod, object? __result, Exception? __exception)
+    private static void PostfixHook(MethodBase __originalMethod, object? __result)
     {
-        s_activeTracer?.OnMethodExit(__originalMethod, __result, __exception);
+        s_activeTracer?.OnMethodExit(__originalMethod, __result, null);
     }
 }

@@ -1,4 +1,5 @@
 using CodeMigrationTool.Server.Sessions;
+using Xunit;
 
 namespace CodeMigrationTool.Server.Tests.Sessions;
 

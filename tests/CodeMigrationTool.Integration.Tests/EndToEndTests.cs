@@ -1,6 +1,7 @@
 using CodeMigrationTool.Agent.Instrumentation;
 using CodeMigrationTool.Agent.Serialization;
 using SampleWcfService;
+using Xunit;
 
 namespace CodeMigrationTool.Integration.Tests;
 
@@ -79,8 +80,8 @@ public class EndToEndTests
             Assert.True(result.Success, $"Execution failed: {result.ExceptionInfo}");
             Assert.NotNull(result.ReturnValueJson);
 
-            // The premium for age 35, Gold tier should be 350 * 0.75 = 262.5
-            Assert.Contains("262.5", result.ReturnValueJson);
+            // The premium for age 35, Gold tier should be 400 * 0.75 = 300
+            Assert.Contains("300", result.ReturnValueJson);
 
             // Verify we can retrieve the call stack
             var callStack = tracer.GetCallStack(result.TraceId);

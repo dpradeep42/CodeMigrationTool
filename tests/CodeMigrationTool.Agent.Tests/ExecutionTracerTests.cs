@@ -1,6 +1,7 @@
 using CodeMigrationTool.Agent.Instrumentation;
 using CodeMigrationTool.Agent.Serialization;
 using SampleWcfService;
+using Xunit;
 
 namespace CodeMigrationTool.Agent.Tests;
 
