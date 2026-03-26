@@ -1,8 +1,6 @@
 using System.ComponentModel;
 using CodeMigrationTool.Sandbox;
 using CodeMigrationTool.Server.Sessions;
-using CodeMigrationTool.Shared.Protos;
-using Grpc.Net.Client;
 using ModelContextProtocol.Server;
 
 namespace CodeMigrationTool.Server.Tools;
@@ -34,31 +32,25 @@ public class ExecutionTools
     {
         var session = _sessions.Get(sessionId);
         var sandbox = _sandboxManager.Get(session.SandboxId);
+        var service = sandbox.Service
+            ?? throw new InvalidOperationException("Sandbox service not available");
 
         // Auto-snapshot before execution for deterministic replay
         if (autoSnapshot)
         {
-            await _snapshotManager.CreateSnapshotAsync(sandbox, $"pre-exec-{DateTime.UtcNow:HHmmss}");
+            _snapshotManager.CreateSnapshot(sandbox, $"pre-exec-{DateTime.UtcNow:HHmmss}");
         }
 
-        using var channel = GrpcChannel.ForAddress($"http://localhost:{session.GrpcPort}");
-        var client = new InstrumentationAgent.InstrumentationAgentClient(channel);
-
-        var response = await client.ExecuteMethodAsync(new ExecuteRequest
-        {
-            MethodName = methodName,
-            ArgsJson = argsJson ?? "",
-            CaptureTrace = true
-        });
+        var result = await service.ExecuteMethodAsync(methodName, argsJson ?? "", true);
 
         return System.Text.Json.JsonSerializer.Serialize(new
         {
-            response.TraceId,
-            ReturnValue = string.IsNullOrEmpty(response.ReturnValueJson) ? null : response.ReturnValueJson,
-            response.ExecutionTimeMs,
-            SideEffects = response.SideEffects.ToList(),
-            Exception = string.IsNullOrEmpty(response.ExceptionInfo) ? null : response.ExceptionInfo,
-            Success = string.IsNullOrEmpty(response.ExceptionInfo)
+            result.TraceId,
+            ReturnValue = result.ReturnValueJson,
+            result.ExecutionTimeMs,
+            result.SideEffects,
+            Exception = result.ExceptionInfo,
+            result.Success
         });
     }
 }

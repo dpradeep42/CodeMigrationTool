@@ -10,13 +10,12 @@ public class SessionManager
 {
     private readonly ConcurrentDictionary<string, SessionInfo> _sessions = new();
 
-    public SessionInfo Create(string sandboxId, int grpcPort)
+    public SessionInfo Create(string sandboxId)
     {
         var session = new SessionInfo
         {
             SessionId = Guid.NewGuid().ToString("N"),
-            SandboxId = sandboxId,
-            GrpcPort = grpcPort
+            SandboxId = sandboxId
         };
 
         if (!_sessions.TryAdd(session.SessionId, session))

@@ -1,17 +1,26 @@
-using Grpc.Core;
-using CodeMigrationTool.Shared.Protos;
+using System.Reflection;
+using System.Runtime.Loader;
 using CodeMigrationTool.Agent.Instrumentation;
 using CodeMigrationTool.Agent.Serialization;
+using CodeMigrationTool.Shared.Models;
+using Microsoft.Extensions.Logging;
 
 namespace CodeMigrationTool.Agent.Services;
 
-public class InstrumentationService : Shared.Protos.InstrumentationAgent.InstrumentationAgentBase
+/// <summary>
+/// In-process instrumentation service that loads a target assembly,
+/// discovers methods, and provides execution tracing and state inspection.
+/// Replaces the previous gRPC-based service with direct method calls.
+/// </summary>
+public class InstrumentationService : IDisposable
 {
     private readonly ILogger<InstrumentationService> _logger;
+    private readonly SafeObjectSerializer _serializer;
     private readonly ExecutionTracer _tracer;
     private readonly MethodDiscovery _discovery;
-    private readonly SafeObjectSerializer _serializer;
     private readonly HarmonyPatcher _patcher;
+    private AssemblyLoadContext? _loadContext;
+    private Assembly? _loadedAssembly;
 
     public InstrumentationService(ILogger<InstrumentationService> logger)
     {
@@ -22,133 +31,67 @@ public class InstrumentationService : Shared.Protos.InstrumentationAgent.Instrum
         _patcher = new HarmonyPatcher(_tracer);
     }
 
-    public override Task<LoadResponse> LoadApplication(LoadRequest request, ServerCallContext context)
+    public ExecutionTracer Tracer => _tracer;
+    public MethodDiscovery Discovery => _discovery;
+    public HarmonyPatcher Patcher => _patcher;
+    public SafeObjectSerializer Serializer => _serializer;
+    public Assembly? LoadedAssembly => _loadedAssembly;
+
+    public List<DiscoveredMethodInfo> LoadApplication(string appPath, Dictionary<string, string>? envVars = null)
     {
-        try
+        _logger.LogInformation("Loading application from {AppPath}", appPath);
+
+        // Load in an isolated AssemblyLoadContext for unloadability
+        _loadContext = new AssemblyLoadContext($"Sandbox-{Guid.NewGuid():N}", isCollectible: true);
+        _loadedAssembly = _loadContext.LoadFromAssemblyPath(Path.GetFullPath(appPath));
+
+        // Set environment variables
+        if (envVars is not null)
         {
-            _logger.LogInformation("Loading application from {AppPath}", request.AppPath);
-
-            var assembly = _discovery.LoadAssembly(request.AppPath);
-            var methods = _discovery.DiscoverMethods(assembly);
-
-            foreach (var envVar in request.EnvVars)
+            foreach (var (key, value) in envVars)
             {
-                Environment.SetEnvironmentVariable(envVar.Key, envVar.Value);
+                Environment.SetEnvironmentVariable(key, value);
             }
-
-            var response = new LoadResponse { Success = true };
-            foreach (var method in methods)
-            {
-                response.Methods.Add(new MethodSignature
-                {
-                    FullName = method.FullName,
-                    DeclaringType = method.DeclaringType,
-                    ReturnType = method.ReturnType,
-                });
-                response.Methods[^1].ParameterTypes.AddRange(method.ParameterTypes);
-                response.Methods[^1].Attributes.AddRange(method.Attributes);
-            }
-
-            return Task.FromResult(response);
         }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "Failed to load application");
-            return Task.FromResult(new LoadResponse
-            {
-                Success = false,
-                ErrorMessage = ex.Message
-            });
-        }
+
+        // Discover methods
+        var methods = _discovery.DiscoverMethods(_loadedAssembly);
+
+        _logger.LogInformation("Loaded {Count} methods from {Assembly}",
+            methods.Count, _loadedAssembly.GetName().Name);
+
+        return methods;
     }
 
-    public override async Task<ExecuteResponse> ExecuteMethod(ExecuteRequest request, ServerCallContext context)
+    public async Task<ExecutionResult> ExecuteMethodAsync(
+        string methodName, string argsJson, bool captureTrace)
     {
-        try
-        {
-            _logger.LogInformation("Executing method {MethodName}", request.MethodName);
-
-            var result = await _tracer.ExecuteAndTraceAsync(
-                request.MethodName,
-                request.ArgsJson,
-                request.CaptureTrace);
-
-            var response = new ExecuteResponse
-            {
-                TraceId = result.TraceId,
-                ReturnValueJson = result.ReturnValueJson ?? "",
-                ExecutionTimeMs = result.ExecutionTimeMs,
-                ExceptionInfo = result.ExceptionInfo ?? ""
-            };
-            response.SideEffects.AddRange(result.SideEffects);
-
-            return response;
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "Failed to execute method {MethodName}", request.MethodName);
-            return new ExecuteResponse
-            {
-                TraceId = "",
-                ExceptionInfo = ex.ToString()
-            };
-        }
+        return await _tracer.ExecuteAndTraceAsync(methodName, argsJson, captureTrace);
     }
 
-    public override Task<CallStackResponse> GetCallStack(CallStackRequest request, ServerCallContext context)
+    public List<CallFrameInfo> GetCallStack(string traceId)
     {
-        var frames = _tracer.GetCallStack(request.TraceId);
-        var response = new CallStackResponse();
-
-        foreach (var frame in frames)
-        {
-            response.Frames.Add(new Shared.Protos.CallFrame
-            {
-                MethodSignature = frame.MethodSignature,
-                DeclaringType = frame.DeclaringType,
-                FilePath = frame.FilePath ?? "",
-                LineNumber = frame.LineNumber,
-                LocalsJson = frame.LocalsJson ?? ""
-            });
-        }
-
-        return Task.FromResult(response);
+        return _tracer.GetCallStack(traceId);
     }
 
-    public override Task<InspectResponse> InspectObject(InspectRequest request, ServerCallContext context)
+    public ObjectState InspectObject(string expression, int maxDepth)
     {
-        var state = _tracer.InspectObject(request.Expression, request.MaxDepth);
-
-        return Task.FromResult(new InspectResponse
-        {
-            TypeName = state.TypeName,
-            ValueJson = state.ValueJson
-        });
+        return _tracer.InspectObject(expression, maxDepth);
     }
 
-    public override Task<ListMethodsResponse> ListMethods(ListMethodsRequest request, ServerCallContext context)
+    public List<DiscoveredMethodInfo> ListMethods(string? namespaceFilter)
     {
-        var methods = _discovery.GetDiscoveredMethods(request.NamespaceFilter);
-        var response = new ListMethodsResponse();
-
-        foreach (var method in methods)
-        {
-            var sig = new MethodSignature
-            {
-                FullName = method.FullName,
-                DeclaringType = method.DeclaringType,
-                ReturnType = method.ReturnType,
-            };
-            sig.ParameterTypes.AddRange(method.ParameterTypes);
-            sig.Attributes.AddRange(method.Attributes);
-            response.Methods.Add(sig);
-        }
-
-        return Task.FromResult(response);
+        return _discovery.GetDiscoveredMethods(namespaceFilter);
     }
 
-    public override Task<HealthResponse> HealthCheck(Empty request, ServerCallContext context)
+    public void Dispose()
     {
-        return Task.FromResult(new HealthResponse { Healthy = true });
+        _patcher.UnpatchAll();
+
+        _loadedAssembly = null;
+        _loadContext?.Unload();
+        _loadContext = null;
+
+        GC.SuppressFinalize(this);
     }
 }

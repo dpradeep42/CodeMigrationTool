@@ -23,8 +23,8 @@ public class StateTools
     }
 
     [McpServerTool(Name = "rollback_state")]
-    [Description("Rollback the sandbox to a previous snapshot, restoring memory and database state for deterministic replay. If no snapshot ID is provided, rolls back to the most recent snapshot.")]
-    public async Task<string> RollbackState(
+    [Description("Rollback the sandbox to a previous snapshot, restoring static field values for deterministic replay. If no snapshot ID is provided, rolls back to the most recent snapshot.")]
+    public string RollbackState(
         [Description("The session ID returned by initialize_runtime")] string sessionId,
         [Description("Optional snapshot ID to restore. If omitted, uses the most recent snapshot.")] string? snapshotId = null)
     {
@@ -44,16 +44,7 @@ public class StateTools
             });
         }
 
-        // Destroy current container and recreate from snapshot image
-        await _sandboxManager.DestroyAsync(sandbox.SandboxId);
-
-        // Create a new sandbox from the snapshot image
-        var newSandbox = await _sandboxManager.CreateAsync(
-            sandbox.AppPath, sandbox.Runtime);
-
-        // Update session to point to the new sandbox
-        session.SandboxId = newSandbox.SandboxId;
-        session.GrpcPort = newSandbox.GrpcPort;
+        _snapshotManager.RestoreSnapshot(sandbox, snapshot);
 
         return System.Text.Json.JsonSerializer.Serialize(new
         {
@@ -66,14 +57,14 @@ public class StateTools
 
     [McpServerTool(Name = "create_snapshot")]
     [Description("Create a named snapshot of the current sandbox state for later rollback. Use this before making destructive operations.")]
-    public async Task<string> CreateSnapshot(
+    public string CreateSnapshot(
         [Description("The session ID returned by initialize_runtime")] string sessionId,
         [Description("Optional human-readable name for the snapshot")] string? name = null)
     {
         var session = _sessions.Get(sessionId);
         var sandbox = _sandboxManager.Get(session.SandboxId);
 
-        var snapshot = await _snapshotManager.CreateSnapshotAsync(sandbox, name);
+        var snapshot = _snapshotManager.CreateSnapshot(sandbox, name);
 
         return System.Text.Json.JsonSerializer.Serialize(new
         {

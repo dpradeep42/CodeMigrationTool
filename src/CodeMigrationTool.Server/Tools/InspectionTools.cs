@@ -1,7 +1,6 @@
 using System.ComponentModel;
+using CodeMigrationTool.Sandbox;
 using CodeMigrationTool.Server.Sessions;
-using CodeMigrationTool.Shared.Protos;
-using Grpc.Net.Client;
 using ModelContextProtocol.Server;
 
 namespace CodeMigrationTool.Server.Tools;
@@ -10,90 +9,85 @@ namespace CodeMigrationTool.Server.Tools;
 public class InspectionTools
 {
     private readonly SessionManager _sessions;
+    private readonly SandboxManager _sandboxManager;
 
-    public InspectionTools(SessionManager sessions)
+    public InspectionTools(SessionManager sessions, SandboxManager sandboxManager)
     {
         _sessions = sessions;
+        _sandboxManager = sandboxManager;
     }
 
     [McpServerTool(Name = "get_call_stack")]
     [Description("Get the complete call stack from a previous traced execution, including hidden middleware, internal framework calls, and local variable values at each frame.")]
-    public async Task<string> GetCallStack(
+    public string GetCallStack(
         [Description("The session ID returned by initialize_runtime")] string sessionId,
         [Description("The trace ID returned by execute_and_trace")] string traceId)
     {
         var session = _sessions.Get(sessionId);
+        var sandbox = _sandboxManager.Get(session.SandboxId);
+        var service = sandbox.Service
+            ?? throw new InvalidOperationException("Sandbox service not available");
 
-        using var channel = GrpcChannel.ForAddress($"http://localhost:{session.GrpcPort}");
-        var client = new InstrumentationAgent.InstrumentationAgentClient(channel);
-
-        var response = await client.GetCallStackAsync(new CallStackRequest { TraceId = traceId });
+        var frames = service.GetCallStack(traceId);
 
         return System.Text.Json.JsonSerializer.Serialize(new
         {
-            Frames = response.Frames.Select(f => new
+            Frames = frames.Select(f => new
             {
                 f.MethodSignature,
                 f.DeclaringType,
-                FilePath = string.IsNullOrEmpty(f.FilePath) ? null : f.FilePath,
+                f.FilePath,
                 f.LineNumber,
-                Locals = string.IsNullOrEmpty(f.LocalsJson) ? null : f.LocalsJson
+                Locals = f.LocalsJson
             })
         });
     }
 
     [McpServerTool(Name = "inspect_memory_state")]
     [Description("Inspect the runtime state of an object, variable, or static field. Returns a JSON serialization of the object with its current field values, handling circular references and deeply nested structures.")]
-    public async Task<string> InspectMemoryState(
+    public string InspectMemoryState(
         [Description("The session ID returned by initialize_runtime")] string sessionId,
         [Description("Expression to inspect, e.g. 'MyNamespace.MyClass.StaticField'")] string expression,
         [Description("Maximum serialization depth (default 3)")] int maxDepth = 3)
     {
         var session = _sessions.Get(sessionId);
+        var sandbox = _sandboxManager.Get(session.SandboxId);
+        var service = sandbox.Service
+            ?? throw new InvalidOperationException("Sandbox service not available");
 
-        using var channel = GrpcChannel.ForAddress($"http://localhost:{session.GrpcPort}");
-        var client = new InstrumentationAgent.InstrumentationAgentClient(channel);
-
-        var response = await client.InspectObjectAsync(new InspectRequest
-        {
-            Expression = expression,
-            MaxDepth = maxDepth
-        });
+        var state = service.InspectObject(expression, maxDepth);
 
         return System.Text.Json.JsonSerializer.Serialize(new
         {
-            response.TypeName,
-            Value = response.ValueJson
+            state.TypeName,
+            Value = state.ValueJson
         });
     }
 
     [McpServerTool(Name = "list_methods")]
     [Description("List all discoverable methods in the loaded application, optionally filtered by namespace. Shows method signatures, return types, parameters, and WCF/Web API attributes.")]
-    public async Task<string> ListMethods(
+    public string ListMethods(
         [Description("The session ID returned by initialize_runtime")] string sessionId,
         [Description("Optional namespace prefix to filter by, e.g. 'MyApp.Services'")] string? namespaceFilter = null)
     {
         var session = _sessions.Get(sessionId);
+        var sandbox = _sandboxManager.Get(session.SandboxId);
+        var service = sandbox.Service
+            ?? throw new InvalidOperationException("Sandbox service not available");
 
-        using var channel = GrpcChannel.ForAddress($"http://localhost:{session.GrpcPort}");
-        var client = new InstrumentationAgent.InstrumentationAgentClient(channel);
-
-        var response = await client.ListMethodsAsync(new ListMethodsRequest
-        {
-            NamespaceFilter = namespaceFilter ?? ""
-        });
+        var methods = service.ListMethods(namespaceFilter);
 
         return System.Text.Json.JsonSerializer.Serialize(new
         {
-            Methods = response.Methods.Select(m => new
+            Methods = methods.Select(m => new
             {
                 m.FullName,
                 m.DeclaringType,
                 m.ReturnType,
-                ParameterTypes = m.ParameterTypes.ToList(),
-                Attributes = m.Attributes.ToList()
+                m.ParameterTypes,
+                m.Attributes
             }),
-            Count = response.Methods.Count
+            Count = methods.Count
         });
     }
 }

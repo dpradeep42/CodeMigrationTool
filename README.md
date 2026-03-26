@@ -10,7 +10,7 @@ AI agents assisting with legacy code migration rely purely on static code analys
 
 CodeMigrationTool is an MCP (Model Context Protocol) server that gives AI agents the ability to:
 
-- **Boot** a legacy .NET application in an isolated sandbox container
+- **Load** a legacy .NET assembly in an isolated in-process sandbox
 - **Execute** specific methods with test data and observe the results
 - **Inspect** live memory state, variable values, and object graphs
 - **Trace** full call stacks including hidden middleware and framework internals
@@ -22,25 +22,25 @@ CodeMigrationTool is an MCP (Model Context Protocol) server that gives AI agents
 AI Agent (Claude, etc.)
   ↕ MCP Protocol (stdio/SSE)
 MCP Server (C# / ModelContextProtocol SDK)
-  ↕ gRPC
-Sandbox Manager (Docker isolation)
-  ↕ gRPC
-Instrumentation Agent (Harmony runtime hooks)
+  ↕ Direct method calls
+Sandbox Manager (AssemblyLoadContext isolation)
+  ↕ Direct method calls
+Instrumentation Engine (Harmony runtime hooks)
 ```
 
-Three layers, all C#/.NET 8:
+All C#/.NET 8, running in a single process:
 
 | Layer | Role | Key Technology |
 |-------|------|---------------|
 | **MCP Server** | Exposes tools to the LLM | `ModelContextProtocol` NuGet SDK |
-| **Sandbox Manager** | Docker container lifecycle, snapshots | `Docker.DotNet` |
-| **Instrumentation Agent** | Runtime method hooking, tracing | `Lib.Harmony` |
+| **Sandbox Manager** | Assembly lifecycle, state snapshots | `AssemblyLoadContext` (collectible) |
+| **Instrumentation Engine** | Runtime method hooking, tracing | `Lib.Harmony` |
 
 ## MCP Tools
 
 | Tool | Description |
 |------|-------------|
-| `initialize_runtime` | Boot a legacy app in a sandboxed container |
+| `initialize_runtime` | Load a .NET assembly in an isolated sandbox |
 | `execute_and_trace` | Run a method and capture the full execution trace |
 | `get_call_stack` | Get the complete call stack from a traced execution |
 | `inspect_memory_state` | Inspect runtime state of objects and variables |
@@ -54,18 +54,11 @@ Three layers, all C#/.NET 8:
 ### Prerequisites
 
 - [.NET 8 SDK](https://dotnet.microsoft.com/download/dotnet/8.0)
-- [Docker](https://docs.docker.com/get-docker/)
 
 ### Build
 
 ```bash
 dotnet build CodeMigrationTool.sln
-```
-
-### Build the sandbox Docker image
-
-```bash
-docker compose --profile build build
 ```
 
 ### Run the MCP server
@@ -108,8 +101,8 @@ dotnet test CodeMigrationTool.sln
 ```
 src/
   CodeMigrationTool.Server/     # MCP server with tool definitions
-  CodeMigrationTool.Sandbox/    # Docker sandbox management
-  CodeMigrationTool.Agent/      # Instrumentation agent (runs inside container)
+  CodeMigrationTool.Sandbox/    # In-process sandbox management
+  CodeMigrationTool.Agent/      # Instrumentation engine (Harmony + tracing)
   CodeMigrationTool.Shared/     # Shared models and gRPC proto definitions
 tests/
   CodeMigrationTool.Server.Tests/
@@ -118,19 +111,29 @@ tests/
   SampleApps/SampleWcfService/  # Test fixture
 ```
 
-## Security
+## How Isolation Works
 
-- Sandboxes run with `--network none` (zero outbound internet access)
-- Application directories mounted read-only
-- Containers run as non-root with dropped capabilities
-- Resource limits enforced (CPU, memory, process count)
-- Session tokens are cryptographically random
+Instead of Docker containers, each session loads the target assembly in a separate **collectible `AssemblyLoadContext`**. This provides:
+
+- **Assembly isolation** — different versions of the same DLL can coexist
+- **Unloadability** — assemblies are fully unloaded when the session ends
+- **State snapshots** — static field values are captured via reflection and serialized to JSON
+- **Deterministic rollback** — snapshots are restored by deserializing and setting static fields back
+
+## Security Considerations
+
+This tool executes arbitrary .NET code in the MCP server process. For production use:
+
+- Run the MCP server on a dedicated machine or VM
+- Limit which assemblies can be loaded via configuration
+- Monitor resource usage
+- Consider adding process-level sandboxing (e.g., AppArmor, seccomp)
 
 ## Roadmap
 
-- [x] Phase 1: Project scaffold + .NET instrumentation agent
-- [ ] Phase 2: Integration tests, warm sandbox pool, session TTL
-- [ ] Phase 3: Resource limits, advanced snapshots, mock database provisioning
+- [x] Phase 1: Project scaffold + in-process .NET instrumentation
+- [ ] Phase 2: Integration tests, warm pool, session TTL
+- [ ] Phase 3: Process-level isolation, resource limits, mock DB provisioning
 - [ ] Phase 4: Python/Java runtimes, execution diff tool, NuGet publishing
 
 ## Contributing

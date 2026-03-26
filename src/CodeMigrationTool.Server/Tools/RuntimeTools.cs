@@ -1,8 +1,6 @@
 using System.ComponentModel;
 using CodeMigrationTool.Sandbox;
 using CodeMigrationTool.Server.Sessions;
-using CodeMigrationTool.Shared.Protos;
-using Grpc.Net.Client;
 using ModelContextProtocol.Server;
 
 namespace CodeMigrationTool.Server.Tools;
@@ -20,8 +18,8 @@ public class RuntimeTools
     }
 
     [McpServerTool(Name = "initialize_runtime")]
-    [Description("Boot a legacy .NET application in an isolated sandbox container. Returns a session ID and list of discovered methods.")]
-    public async Task<string> InitializeRuntime(
+    [Description("Boot a legacy .NET application in an isolated in-process sandbox. Returns a session ID and list of discovered methods.")]
+    public string InitializeRuntime(
         [Description("Path to the application assembly (.dll) to load")] string appPath,
         [Description("Runtime type: 'dotnet'")] string runtime = "dotnet",
         [Description("Environment variables as JSON object, e.g. {\"KEY\": \"VALUE\"}")] string? envVarsJson = null)
@@ -30,51 +28,33 @@ public class RuntimeTools
             ? null
             : System.Text.Json.JsonSerializer.Deserialize<Dictionary<string, string>>(envVarsJson);
 
-        var sandbox = await _sandboxManager.CreateAsync(appPath, runtime, envVars);
-        var session = _sessions.Create(sandbox.SandboxId, sandbox.GrpcPort);
+        var sandbox = _sandboxManager.Create(appPath, runtime, envVars);
+        var session = _sessions.Create(sandbox.SandboxId);
 
-        // Connect to the agent inside the sandbox and load the application
-        using var channel = GrpcChannel.ForAddress($"http://localhost:{sandbox.GrpcPort}");
-        var client = new InstrumentationAgent.InstrumentationAgentClient(channel);
-
-        var loadResponse = await client.LoadApplicationAsync(new LoadRequest
-        {
-            AppPath = "/app",
-            EnvVars = { envVars ?? new Dictionary<string, string>() }
-        });
-
-        if (!loadResponse.Success)
-        {
-            await _sandboxManager.DestroyAsync(sandbox.SandboxId);
-            _sessions.Remove(session.SessionId);
-            return System.Text.Json.JsonSerializer.Serialize(new
-            {
-                Error = $"Failed to load application: {loadResponse.ErrorMessage}"
-            });
-        }
+        var methods = sandbox.Service!.ListMethods(null);
 
         return System.Text.Json.JsonSerializer.Serialize(new
         {
             session.SessionId,
             Status = "ready",
-            Methods = loadResponse.Methods.Select(m => new
+            Methods = methods.Select(m => new
             {
                 m.FullName,
                 m.DeclaringType,
                 m.ReturnType,
-                ParameterTypes = m.ParameterTypes.ToList(),
-                Attributes = m.Attributes.ToList()
+                m.ParameterTypes,
+                m.Attributes
             })
         });
     }
 
     [McpServerTool(Name = "shutdown_runtime")]
     [Description("Shut down a sandbox session and clean up all resources.")]
-    public async Task<string> ShutdownRuntime(
+    public string ShutdownRuntime(
         [Description("The session ID returned by initialize_runtime")] string sessionId)
     {
         var session = _sessions.Get(sessionId);
-        await _sandboxManager.DestroyAsync(session.SandboxId);
+        _sandboxManager.Destroy(session.SandboxId);
         _sessions.Remove(sessionId);
 
         return System.Text.Json.JsonSerializer.Serialize(new { Success = true });

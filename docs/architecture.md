@@ -2,7 +2,7 @@
 
 ## Overview
 
-CodeMigrationTool uses a three-layer architecture where each layer has a single responsibility:
+CodeMigrationTool uses an in-process architecture where all layers run in a single .NET process:
 
 ```
 ┌─────────────────────────────────────────────────────┐
@@ -12,17 +12,17 @@ CodeMigrationTool uses a three-layer architecture where each layer has a single 
 │  Layer A: MCP Server                                │
 │  - Exposes tools to LLM via [McpServerTool]         │
 │  - Session management                               │
-│  - Translates semantic requests to gRPC calls        │
-│  ↕ gRPC                                             │
+│  - Translates semantic requests to direct calls      │
+│  ↕ Direct method calls                              │
 ├─────────────────────────────────────────────────────┤
 │  Layer B: Sandbox Manager                           │
-│  - Docker container orchestration                   │
-│  - Snapshot/rollback                                │
-│  - Network isolation, resource limits               │
-│  ↕ gRPC (localhost, within container)               │
+│  - AssemblyLoadContext lifecycle                     │
+│  - State snapshots via reflection + JSON             │
+│  - Assembly isolation and unloading                  │
+│  ↕ Direct method calls                              │
 ├─────────────────────────────────────────────────────┤
-│  Layer C: Instrumentation Agent                     │
-│  - Runs inside the sandbox container                │
+│  Layer C: Instrumentation Engine                    │
+│  - Runs in-process as a library                     │
 │  - Harmony patches for method interception          │
 │  - Reflection-based method discovery                │
 │  - Object serialization to JSON                     │
@@ -42,27 +42,38 @@ The MCP Server is the entry point for AI agents. It exposes tools via the Model 
 
 ## Layer B: Sandbox Manager
 
-Manages Docker containers that provide isolated execution environments.
+Manages in-process sandboxes using .NET's `AssemblyLoadContext` for assembly isolation.
 
 **Key classes:**
-- `SandboxManager.cs` — Container create/start/stop/destroy via Docker.DotNet
-- `SnapshotManager.cs` — `docker commit` based snapshots for state rollback
-- `SandboxPool.cs` — Warm pool for low-latency sandbox acquisition (Phase 2)
+- `SandboxManager.cs` — Creates/destroys sandboxes, each with its own `AssemblyLoadContext`
+- `SnapshotManager.cs` — Captures static field state via reflection, serializes to JSON, restores by deserializing
+- `SandboxPool.cs` — Warm pool for pre-loaded assemblies (Phase 2)
 
-## Layer C: Instrumentation Agent
+**Isolation model:**
+- Each session loads the target assembly in a separate **collectible `AssemblyLoadContext`**
+- Assemblies can be fully unloaded when the session ends
+- Different versions of the same DLL can coexist across sessions
 
-A gRPC server that runs inside each sandbox container. It loads the target application, hooks into its methods, and reports execution traces.
+## Layer C: Instrumentation Engine
+
+A library that provides runtime method hooking and execution tracing. Called directly by the MCP Server via the Sandbox Manager.
 
 **Key classes:**
 - `Instrumentation/HarmonyPatcher.cs` — Runtime method patching via Harmony Prefix/Postfix
 - `Instrumentation/ExecutionTracer.cs` — Records call stacks, timing, and variable state
-- `Instrumentation/MethodDiscovery.cs` — Reflection-based method enumeration
+- `Instrumentation/MethodDiscovery.cs` — Reflection-based method enumeration, WCF attribute detection
 - `Serialization/SafeObjectSerializer.cs` — JSON serialization with circular reference handling
+- `Services/InstrumentationService.cs` — Facade that coordinates all instrumentation components
 
-## Communication
+## State Snapshots ("Time Machine")
 
-All inter-layer communication uses gRPC with protobuf contracts defined in `src/CodeMigrationTool.Shared/Protos/instrumentation.proto`.
+Instead of container snapshots, the system captures and restores state via reflection:
+
+1. **Capture:** Enumerate all static fields in the loaded assembly's exported types, serialize their values to JSON
+2. **Restore:** Deserialize the JSON and set static fields back to their captured values
+
+This enables deterministic replay: execute a method, observe the result, rollback state, try again with different inputs.
 
 ## Security Model
 
-See [security.md](security.md) for details on sandbox isolation and threat model.
+See [security.md](security.md) for details on the isolation model and threat considerations.

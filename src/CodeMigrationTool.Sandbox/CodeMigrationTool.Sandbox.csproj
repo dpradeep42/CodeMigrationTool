@@ -7,12 +7,11 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <PackageReference Include="Docker.DotNet" Version="3.125.15" />
-    <PackageReference Include="Grpc.Net.Client" Version="2.65.0" />
     <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="8.0.2" />
   </ItemGroup>
 
   <ItemGroup>
+    <ProjectReference Include="..\CodeMigrationTool.Agent\CodeMigrationTool.Agent.csproj" />
     <ProjectReference Include="..\CodeMigrationTool.Shared\CodeMigrationTool.Shared.csproj" />
   </ItemGroup>
 
